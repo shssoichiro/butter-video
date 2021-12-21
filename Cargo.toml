@@ -1,0 +1,14 @@
+[package]
+name = "butter-video"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+av-metrics-decoders = { version = "0.1", default-features = false, features = [
+    "y4m",
+] }
+clap = "2.34.0"
+tempfile = "3.2.0"
+yuv = "0.1.4"
