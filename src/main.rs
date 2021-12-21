@@ -1,6 +1,6 @@
 #![warn(clippy::all)]
 
-use std::{env, io::Write, mem::size_of, path::Path, process::Command};
+use std::{env, fs, mem::size_of, path::Path, process::Command};
 
 use av_metrics_decoders::{
     CastFromPrimitive,
@@ -10,8 +10,9 @@ use av_metrics_decoders::{
     Pixel,
     Y4MDecoder,
 };
-use clap::{App, Arg, SubCommand};
-use tempfile::NamedTempFile;
+use clap::{App, Arg, ArgMatches, SubCommand};
+use image::{ImageBuffer, Rgb, RgbImage};
+use tempfile::Builder;
 use yuv::{
     color::{Depth, MatrixCoefficients, Range},
     convert::RGBConvert,
@@ -35,24 +36,27 @@ fn main() {
         )
         .get_matches();
 
-    let input1 = Path::new(args.value_of("input1").unwrap());
-    let input2 = Path::new(args.value_of("input2").unwrap());
-
-    match args.subcommand_name().unwrap() {
-        "butter" => compute_butter(input1, input2),
-        "ssimulacra" => compute_ssimulacra(input1, input2),
+    let result = match args.subcommand_name().unwrap() {
+        "butter" => compute_butter(args.subcommand_matches("butter").unwrap()),
+        "ssimulacra" => compute_ssimulacra(args.subcommand_matches("ssimulacra").unwrap()),
         _ => unreachable!(),
     };
+
+    println!("{}", result);
 }
 
-fn compute_butter(input1: &Path, input2: &Path) -> f64 {
+fn compute_butter(args: &ArgMatches) -> f64 {
     let butteraugli_path =
         env::var("BUTTERAUGLI_PATH").unwrap_or_else(|_| "butteraugli".to_string());
+    let input1 = Path::new(args.value_of("input1").unwrap());
+    let input2 = Path::new(args.value_of("input2").unwrap());
     run_metric(&butteraugli_path, input1, input2)
 }
 
-fn compute_ssimulacra(input1: &Path, input2: &Path) -> f64 {
+fn compute_ssimulacra(args: &ArgMatches) -> f64 {
     let ssimulacra_path = env::var("SSIMULACRA_PATH").unwrap_or_else(|_| "ssimulacra".to_string());
+    let input1 = Path::new(args.value_of("input1").unwrap());
+    let input2 = Path::new(args.value_of("input2").unwrap());
     run_metric(&ssimulacra_path, input1, input2)
 }
 
@@ -142,25 +146,64 @@ fn compare_frame<T: Pixel, U: Pixel>(
     frame1: &FrameInfo<T>,
     frame2: &FrameInfo<U>,
 ) -> f64 {
-    let mut temp_file1 = NamedTempFile::new().unwrap();
-    let mut temp_file2 = NamedTempFile::new().unwrap();
+    let (_, path1) = Builder::new()
+        .suffix(".png")
+        .tempfile()
+        .unwrap()
+        .keep()
+        .unwrap();
+    let (_, path2) = Builder::new()
+        .suffix(".png")
+        .tempfile()
+        .unwrap()
+        .keep()
+        .unwrap();
     {
-        let file1 = temp_file1.as_file_mut();
-        let file2 = temp_file2.as_file_mut();
-        let image1 = yuv_to_rgb(frame1);
-        let image2 = yuv_to_rgb(frame2);
-        file1.write_all(&image1).unwrap();
-        file1.flush().unwrap();
-        file2.write_all(&image2).unwrap();
-        file2.flush().unwrap();
+        if size_of::<T>() == 1 {
+            let image1: RgbImage = ImageBuffer::from_raw(
+                frame1.planes[0].cfg.width as u32,
+                frame1.planes[0].cfg.height as u32,
+                yuv_to_rgb_u8(frame1),
+            )
+            .unwrap();
+            image1.save(&path1).unwrap();
+        } else {
+            let image1: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::from_raw(
+                frame1.planes[0].cfg.width as u32,
+                frame1.planes[0].cfg.height as u32,
+                yuv_to_rgb_u16(frame1),
+            )
+            .unwrap();
+            image1.save(&path1).unwrap();
+        }
+        if size_of::<U>() == 1 {
+            let image2: RgbImage = ImageBuffer::from_raw(
+                frame2.planes[0].cfg.width as u32,
+                frame2.planes[0].cfg.height as u32,
+                yuv_to_rgb_u8(frame2),
+            )
+            .unwrap();
+            image2.save(&path2).unwrap();
+        } else {
+            let image2: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::from_raw(
+                frame2.planes[0].cfg.width as u32,
+                frame2.planes[0].cfg.height as u32,
+                yuv_to_rgb_u16(frame2),
+            )
+            .unwrap();
+            image2.save(&path2).unwrap();
+        }
     }
     let output = Command::new(base_command)
-        .arg(temp_file1.path())
-        .arg(temp_file2.path())
+        .arg(&path1)
+        .arg(&path2)
         .output()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
 
+    let _ = fs::remove_file(path1);
+    let _ = fs::remove_file(path2);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
     stdout
         .lines()
         .find(|line| !line.is_empty())
@@ -170,7 +213,9 @@ fn compare_frame<T: Pixel, U: Pixel>(
         .unwrap()
 }
 
-fn yuv_to_rgb<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
+fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
+    assert!(size_of::<T>() == 1);
+
     let plane_y = &frame.planes[0];
     let plane_u = &frame.planes[1];
     let plane_v = &frame.planes[2];
@@ -183,79 +228,90 @@ fn yuv_to_rgb<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
     };
     let (ss_x, ss_y) = match frame.chroma_sampling {
         ChromaSampling::Cs400 => {
-            if size_of::<T>() == 1 {
-                return (0..plane_y.cfg.height)
-                    .flat_map(|y| {
-                        (0..plane_y.cfg.width).flat_map(move |x| {
-                            let val = u8::cast_from(plane_y.p(x, y));
-                            [val, val, val].into_iter()
-                        })
+            return (0..plane_y.cfg.height)
+                .flat_map(|y| {
+                    (0..plane_y.cfg.width).flat_map(move |x| {
+                        let val = u8::cast_from(plane_y.p(x, y));
+                        [val, val, val].into_iter()
                     })
-                    .collect();
-            } else {
-                return (0..plane_y.cfg.height)
-                    .flat_map(|y| {
-                        (0..plane_y.cfg.width).flat_map(move |x| {
-                            let val = u16::cast_from(plane_y.p(x, y));
-                            let val = u16::to_ne_bytes(val);
-                            val.into_iter()
-                                .chain(val.into_iter())
-                                .chain(val.into_iter())
-                        })
-                    })
-                    .collect();
-            }
+                })
+                .collect();
         }
         ChromaSampling::Cs420 => (1, 1),
         ChromaSampling::Cs422 => (0, 1),
         ChromaSampling::Cs444 => (0, 0),
     };
 
-    if size_of::<T>() == 1 {
-        debug_assert_eq!(frame.bit_depth, 8);
-        let converter = RGBConvert::<u8>::new(Range::Limited, colorspace).unwrap();
-        (0..plane_y.cfg.height)
-            .flat_map(|y| {
-                let converter = converter.clone();
-                (0..plane_y.cfg.width).flat_map(move |x| {
-                    let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
-                    let y = u8::cast_from(plane_y.p(x, y));
-                    let u = u8::cast_from(plane_u.p(chroma_x, chroma_y));
-                    let v = u8::cast_from(plane_v.p(chroma_x, chroma_y));
-                    let yuv = YUV { y, u, v };
-                    let rgb = converter.to_rgb(yuv);
-                    [rgb.r, rgb.g, rgb.b].into_iter()
-                })
+    debug_assert_eq!(frame.bit_depth, 8);
+    let converter = RGBConvert::<u8>::new(Range::Limited, colorspace).unwrap();
+    (0..plane_y.cfg.height)
+        .flat_map(|y| {
+            let converter = converter.clone();
+            (0..plane_y.cfg.width).flat_map(move |x| {
+                let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
+                let y = u8::cast_from(plane_y.p(x, y));
+                let u = u8::cast_from(plane_u.p(chroma_x, chroma_y));
+                let v = u8::cast_from(plane_v.p(chroma_x, chroma_y));
+                let yuv = YUV { y, u, v };
+                let rgb = converter.to_rgb(yuv);
+                [rgb.r, rgb.g, rgb.b].into_iter()
             })
-            .collect()
+        })
+        .collect()
+}
+
+fn yuv_to_rgb_u16<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u16> {
+    assert!(size_of::<T>() == 2);
+
+    let plane_y = &frame.planes[0];
+    let plane_u = &frame.planes[1];
+    let plane_v = &frame.planes[2];
+
+    // TODO: Support HDR content
+    let colorspace = if plane_y.cfg.height > 576 {
+        MatrixCoefficients::BT709
     } else {
-        let converter = RGBConvert::<u16>::new(
-            Range::Limited,
-            colorspace,
-            match frame.bit_depth {
-                10 => Depth::Depth10,
-                12 => Depth::Depth12,
-                16 => Depth::Depth16,
-                _ => panic!("Unsupported bit depth"),
-            },
-        )
-        .unwrap();
-        (0..plane_y.cfg.height)
-            .flat_map(|y| {
-                let converter = converter.clone();
-                (0..plane_y.cfg.width).flat_map(move |x| {
-                    let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
-                    let y = u16::cast_from(plane_y.p(x, y));
-                    let u = u16::cast_from(plane_u.p(chroma_x, chroma_y));
-                    let v = u16::cast_from(plane_v.p(chroma_x, chroma_y));
-                    let yuv = YUV { y, u, v };
-                    let rgb = converter.to_rgb(yuv);
-                    u16::to_ne_bytes(rgb.r)
-                        .into_iter()
-                        .chain(u16::to_ne_bytes(rgb.g).into_iter())
-                        .chain(u16::to_ne_bytes(rgb.b).into_iter())
+        MatrixCoefficients::BT601
+    };
+    let (ss_x, ss_y) = match frame.chroma_sampling {
+        ChromaSampling::Cs400 => {
+            return (0..plane_y.cfg.height)
+                .flat_map(|y| {
+                    (0..plane_y.cfg.width).flat_map(move |x| {
+                        let val = u16::cast_from(plane_y.p(x, y));
+                        [val, val, val].into_iter()
+                    })
                 })
+                .collect();
+        }
+        ChromaSampling::Cs420 => (1, 1),
+        ChromaSampling::Cs422 => (0, 1),
+        ChromaSampling::Cs444 => (0, 0),
+    };
+
+    let converter = RGBConvert::<u16>::new(
+        Range::Limited,
+        colorspace,
+        match frame.bit_depth {
+            10 => Depth::Depth10,
+            12 => Depth::Depth12,
+            16 => Depth::Depth16,
+            _ => panic!("Unsupported bit depth"),
+        },
+    )
+    .unwrap();
+    (0..plane_y.cfg.height)
+        .flat_map(|y| {
+            let converter = converter.clone();
+            (0..plane_y.cfg.width).flat_map(move |x| {
+                let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
+                let y = u16::cast_from(plane_y.p(x, y));
+                let u = u16::cast_from(plane_u.p(chroma_x, chroma_y));
+                let v = u16::cast_from(plane_v.p(chroma_x, chroma_y));
+                let yuv = YUV { y, u, v };
+                let rgb = converter.to_rgb(yuv);
+                [rgb.r, rgb.g, rgb.b].into_iter()
             })
-            .collect()
-    }
+        })
+        .collect()
 }
