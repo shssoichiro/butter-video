@@ -10,6 +10,7 @@ use av_metrics_decoders::{
     Pixel,
     Y4MDecoder,
 };
+use average::{Estimate, Quantile};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use image::{ImageBuffer, Rgb, RgbImage};
 use tempfile::Builder;
@@ -36,31 +37,29 @@ fn main() {
         )
         .get_matches();
 
-    let result = match args.subcommand_name().unwrap() {
+    match args.subcommand_name().unwrap() {
         "butter" => compute_butter(args.subcommand_matches("butter").unwrap()),
         "ssimulacra" => compute_ssimulacra(args.subcommand_matches("ssimulacra").unwrap()),
         _ => unreachable!(),
     };
-
-    println!("{}", result);
 }
 
-fn compute_butter(args: &ArgMatches) -> f64 {
+fn compute_butter(args: &ArgMatches) {
     let butteraugli_path =
         env::var("BUTTERAUGLI_PATH").unwrap_or_else(|_| "butteraugli".to_string());
     let input1 = Path::new(args.value_of("input1").unwrap());
     let input2 = Path::new(args.value_of("input2").unwrap());
-    run_metric(&butteraugli_path, input1, input2)
+    run_metric(&butteraugli_path, input1, input2);
 }
 
-fn compute_ssimulacra(args: &ArgMatches) -> f64 {
+fn compute_ssimulacra(args: &ArgMatches) {
     let ssimulacra_path = env::var("SSIMULACRA_PATH").unwrap_or_else(|_| "ssimulacra".to_string());
     let input1 = Path::new(args.value_of("input1").unwrap());
     let input2 = Path::new(args.value_of("input2").unwrap());
-    run_metric(&ssimulacra_path, input1, input2)
+    run_metric(&ssimulacra_path, input1, input2);
 }
 
-fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
+fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
     let mut dec1 = Y4MDecoder::new(input1).expect("Failed to open file");
     let details1 = dec1.get_video_details();
     let mut dec2 = Y4MDecoder::new(input2).expect("Failed to open file");
@@ -69,6 +68,7 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
     assert_eq!(details1.width, details2.width);
 
     let mut sum = 0.0f64;
+    let mut norms = vec![];
     let mut frameno = 0;
 
     loop {
@@ -85,7 +85,11 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
                     }
                     break;
                 }
-                sum += compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                sum += score;
+                if let Some(norm) = norm {
+                    norms.push(norm);
+                }
             }
             (8, _) => {
                 let frame1 = dec1.read_video_frame::<u8>();
@@ -99,7 +103,11 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
                     }
                     break;
                 }
-                sum += compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                sum += score;
+                if let Some(norm) = norm {
+                    norms.push(norm);
+                }
             }
             (_, 8) => {
                 let frame1 = dec1.read_video_frame::<u16>();
@@ -113,7 +121,11 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
                     }
                     break;
                 }
-                sum += compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                sum += score;
+                if let Some(norm) = norm {
+                    norms.push(norm);
+                }
             }
             (_, _) => {
                 let frame1 = dec1.read_video_frame::<u16>();
@@ -127,7 +139,11 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
                     }
                     break;
                 }
-                sum += compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                sum += score;
+                if let Some(norm) = norm {
+                    norms.push(norm);
+                }
             }
         };
 
@@ -138,14 +154,22 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) -> f64 {
         panic!("No frames read");
     }
 
-    sum / frameno as f64
+    let avg_score = sum / frameno as f64;
+    println!("Score: {}", avg_score);
+    if !norms.is_empty() {
+        let mut quant = Quantile::new(0.75);
+        for norm in norms {
+            quant.add(norm);
+        }
+        println!("3-norm (75th percentile): {}", quant.quantile());
+    }
 }
 
 fn compare_frame<T: Pixel, U: Pixel>(
     base_command: &str,
     frame1: &FrameInfo<T>,
     frame2: &FrameInfo<U>,
-) -> f64 {
+) -> (f64, Option<f64>) {
     let (_, path1) = Builder::new()
         .suffix(".ppm")
         .tempfile()
@@ -204,13 +228,19 @@ fn compare_frame<T: Pixel, U: Pixel>(
     let _ = fs::remove_file(path2);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let score = stdout
         .lines()
         .find(|line| !line.is_empty())
         .unwrap()
         .trim()
-        .parse()
-        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    let norm = stdout
+        .lines()
+        .find(|line| line.starts_with("3-norm"))
+        .map(|line| line.split_once(": ").unwrap())
+        .map(|(_, val)| val.parse::<f64>().unwrap());
+    (score, norm)
 }
 
 fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
