@@ -147,13 +147,13 @@ fn compare_frame<T: Pixel, U: Pixel>(
     frame2: &FrameInfo<U>,
 ) -> f64 {
     let (_, path1) = Builder::new()
-        .suffix(".png")
+        .suffix(".ppm")
         .tempfile()
         .unwrap()
         .keep()
         .unwrap();
     let (_, path2) = Builder::new()
-        .suffix(".png")
+        .suffix(".ppm")
         .tempfile()
         .unwrap()
         .keep()

@@ -11,6 +11,6 @@ av-metrics-decoders = { version = "0.1", default-features = false, features = [
     "y4m",
 ] }
 clap = "2.34.0"
-image = { version = "0.23", default-features = false, features = ["png"] }
+image = { version = "0.23", default-features = false, features = ["pnm"] }
 tempfile = "3.2.0"
 yuv = "0.1.4"
