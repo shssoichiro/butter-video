@@ -12,10 +12,10 @@ use av_metrics_decoders::{
 };
 use average::{Estimate, Quantile};
 use clap::{App, Arg, ArgMatches, SubCommand};
-use image::{ImageBuffer, Rgb, RgbImage};
+use image::{ImageBuffer, RgbImage};
 use tempfile::Builder;
 use yuv::{
-    color::{Depth, MatrixCoefficients, Range},
+    color::{MatrixCoefficients, Range},
     convert::RGBConvert,
     YUV,
 };
@@ -183,40 +183,21 @@ fn compare_frame<T: Pixel, U: Pixel>(
         .keep()
         .unwrap();
     {
-        if size_of::<T>() == 1 {
-            let image1: RgbImage = ImageBuffer::from_raw(
-                frame1.planes[0].cfg.width as u32,
-                frame1.planes[0].cfg.height as u32,
-                yuv_to_rgb_u8(frame1),
-            )
-            .unwrap();
-            image1.save(&path1).unwrap();
-        } else {
-            let image1: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::from_raw(
-                frame1.planes[0].cfg.width as u32,
-                frame1.planes[0].cfg.height as u32,
-                yuv_to_rgb_u16(frame1),
-            )
-            .unwrap();
-            image1.save(&path1).unwrap();
-        }
-        if size_of::<U>() == 1 {
-            let image2: RgbImage = ImageBuffer::from_raw(
-                frame2.planes[0].cfg.width as u32,
-                frame2.planes[0].cfg.height as u32,
-                yuv_to_rgb_u8(frame2),
-            )
-            .unwrap();
-            image2.save(&path2).unwrap();
-        } else {
-            let image2: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::from_raw(
-                frame2.planes[0].cfg.width as u32,
-                frame2.planes[0].cfg.height as u32,
-                yuv_to_rgb_u16(frame2),
-            )
-            .unwrap();
-            image2.save(&path2).unwrap();
-        }
+        let image1: RgbImage = ImageBuffer::from_raw(
+            frame1.planes[0].cfg.width as u32,
+            frame1.planes[0].cfg.height as u32,
+            yuv_to_rgb_u8(frame1),
+        )
+        .unwrap();
+        image1.save(&path1).unwrap();
+
+        let image2: RgbImage = ImageBuffer::from_raw(
+            frame2.planes[0].cfg.width as u32,
+            frame2.planes[0].cfg.height as u32,
+            yuv_to_rgb_u8(frame2),
+        )
+        .unwrap();
+        image2.save(&path2).unwrap();
     }
     let output = Command::new(base_command)
         .arg(&path1)
@@ -243,9 +224,10 @@ fn compare_frame<T: Pixel, U: Pixel>(
     (score, norm)
 }
 
+// butteraugli_main makes us use .ppm files which don't support 8-bit input.
+// I hate it, but it means we have to downconvert.
+// The results should not be considerably skewed.
 fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
-    assert!(size_of::<T>() == 1);
-
     let plane_y = &frame.planes[0];
     let plane_u = &frame.planes[1];
     let plane_v = &frame.planes[2];
@@ -261,7 +243,11 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
             return (0..plane_y.cfg.height)
                 .flat_map(|y| {
                     (0..plane_y.cfg.width).flat_map(move |x| {
-                        let val = u8::cast_from(plane_y.p(x, y));
+                        let val = if size_of::<T>() == 1 {
+                            u8::cast_from(plane_y.p(x, y))
+                        } else {
+                            (u16::cast_from(plane_y.p(x, y)) >> (frame.bit_depth - 8)) as u8
+                        };
                         [val, val, val].into_iter()
                     })
                 })
@@ -279,65 +265,21 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
             let converter = converter.clone();
             (0..plane_y.cfg.width).flat_map(move |x| {
                 let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
-                let y = u8::cast_from(plane_y.p(x, y));
-                let u = u8::cast_from(plane_u.p(chroma_x, chroma_y));
-                let v = u8::cast_from(plane_v.p(chroma_x, chroma_y));
-                let yuv = YUV { y, u, v };
-                let rgb = converter.to_rgb(yuv);
-                [rgb.r, rgb.g, rgb.b].into_iter()
-            })
-        })
-        .collect()
-}
-
-fn yuv_to_rgb_u16<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u16> {
-    assert!(size_of::<T>() == 2);
-
-    let plane_y = &frame.planes[0];
-    let plane_u = &frame.planes[1];
-    let plane_v = &frame.planes[2];
-
-    // TODO: Support HDR content
-    let colorspace = if plane_y.cfg.height > 576 {
-        MatrixCoefficients::BT709
-    } else {
-        MatrixCoefficients::BT601
-    };
-    let (ss_x, ss_y) = match frame.chroma_sampling {
-        ChromaSampling::Cs400 => {
-            return (0..plane_y.cfg.height)
-                .flat_map(|y| {
-                    (0..plane_y.cfg.width).flat_map(move |x| {
-                        let val = u16::cast_from(plane_y.p(x, y));
-                        [val, val, val].into_iter()
-                    })
-                })
-                .collect();
-        }
-        ChromaSampling::Cs420 => (1, 1),
-        ChromaSampling::Cs422 => (0, 1),
-        ChromaSampling::Cs444 => (0, 0),
-    };
-
-    let converter = RGBConvert::<u16>::new(
-        Range::Limited,
-        colorspace,
-        match frame.bit_depth {
-            10 => Depth::Depth10,
-            12 => Depth::Depth12,
-            16 => Depth::Depth16,
-            _ => panic!("Unsupported bit depth"),
-        },
-    )
-    .unwrap();
-    (0..plane_y.cfg.height)
-        .flat_map(|y| {
-            let converter = converter.clone();
-            (0..plane_y.cfg.width).flat_map(move |x| {
-                let (chroma_x, chroma_y) = (x >> ss_x, y >> ss_y);
-                let y = u16::cast_from(plane_y.p(x, y));
-                let u = u16::cast_from(plane_u.p(chroma_x, chroma_y));
-                let v = u16::cast_from(plane_v.p(chroma_x, chroma_y));
+                let (y, u, v) = if size_of::<T>() == 1 {
+                    (
+                        u8::cast_from(plane_y.p(x, y)),
+                        u8::cast_from(plane_u.p(chroma_x, chroma_y)),
+                        u8::cast_from(plane_v.p(chroma_x, chroma_y)),
+                    )
+                } else {
+                    (
+                        (u16::cast_from(plane_y.p(x, y)) >> (frame.bit_depth - 8)) as u8,
+                        (u16::cast_from(plane_u.p(chroma_x, chroma_y)) >> (frame.bit_depth - 8))
+                            as u8,
+                        (u16::cast_from(plane_v.p(chroma_x, chroma_y)) >> (frame.bit_depth - 8))
+                            as u8,
+                    )
+                };
                 let yuv = YUV { y, u, v };
                 let rgb = converter.to_rgb(yuv);
                 [rgb.r, rgb.g, rgb.b].into_iter()
