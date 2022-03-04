@@ -27,3 +27,13 @@ Then you can run the tool with either:
 Or:
 
 `butter-video ssimulacra raw.y4m encoded.y4m`
+
+### Obtaining the butteraugli and ssimulacra binaries
+
+#### Arch Linux
+
+Install this AUR package: https://aur.archlinux.org/packages/libjxl-metrics-git
+
+#### Other
+
+TODO (Someone please volunteer to fill this in for other operating systems)
