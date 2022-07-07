@@ -6,9 +6,10 @@ use av_metrics_decoders::{
     CastFromPrimitive,
     ChromaSampling,
     Decoder,
-    FrameInfo,
+    FfmpegDecoder,
+    Frame,
     Pixel,
-    Y4MDecoder,
+    VideoDetails,
 };
 use average::{Estimate, Quantile};
 use clap::{App, Arg, ArgMatches, SubCommand};
@@ -60,9 +61,9 @@ fn compute_ssimulacra(args: &ArgMatches) {
 }
 
 fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
-    let mut dec1 = Y4MDecoder::new(input1).expect("Failed to open file");
+    let mut dec1 = FfmpegDecoder::new(input1).expect("Failed to open file");
     let details1 = dec1.get_video_details();
-    let mut dec2 = Y4MDecoder::new(input2).expect("Failed to open file");
+    let mut dec2 = FfmpegDecoder::new(input2).expect("Failed to open file");
     let details2 = dec2.get_video_details();
     assert_eq!(details1.height, details2.height);
     assert_eq!(details1.width, details2.width);
@@ -85,7 +86,13 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
                     }
                     break;
                 }
-                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(
+                    base_command,
+                    &frame1.unwrap(),
+                    &details1,
+                    &frame2.unwrap(),
+                    &details2,
+                );
                 sum += score;
                 if let Some(norm) = norm {
                     norms.push(norm);
@@ -103,7 +110,13 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
                     }
                     break;
                 }
-                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(
+                    base_command,
+                    &frame1.unwrap(),
+                    &details1,
+                    &frame2.unwrap(),
+                    &details2,
+                );
                 sum += score;
                 if let Some(norm) = norm {
                     norms.push(norm);
@@ -121,7 +134,13 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
                     }
                     break;
                 }
-                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(
+                    base_command,
+                    &frame1.unwrap(),
+                    &details1,
+                    &frame2.unwrap(),
+                    &details2,
+                );
                 sum += score;
                 if let Some(norm) = norm {
                     norms.push(norm);
@@ -139,7 +158,13 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
                     }
                     break;
                 }
-                let (score, norm) = compare_frame(base_command, &frame1.unwrap(), &frame2.unwrap());
+                let (score, norm) = compare_frame(
+                    base_command,
+                    &frame1.unwrap(),
+                    &details1,
+                    &frame2.unwrap(),
+                    &details2,
+                );
                 sum += score;
                 if let Some(norm) = norm {
                     norms.push(norm);
@@ -167,8 +192,10 @@ fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
 
 fn compare_frame<T: Pixel, U: Pixel>(
     base_command: &str,
-    frame1: &FrameInfo<T>,
-    frame2: &FrameInfo<U>,
+    frame1: &Frame<T>,
+    details1: &VideoDetails,
+    frame2: &Frame<U>,
+    details2: &VideoDetails,
 ) -> (f64, Option<f64>) {
     let (_, path1) = Builder::new()
         .suffix(".png")
@@ -186,7 +213,7 @@ fn compare_frame<T: Pixel, U: Pixel>(
         let image1: RgbImage = ImageBuffer::from_raw(
             frame1.planes[0].cfg.width as u32,
             frame1.planes[0].cfg.height as u32,
-            yuv_to_rgb_u8(frame1),
+            yuv_to_rgb_u8(frame1, details1),
         )
         .unwrap();
         image1.save(&path1).unwrap();
@@ -194,7 +221,7 @@ fn compare_frame<T: Pixel, U: Pixel>(
         let image2: RgbImage = ImageBuffer::from_raw(
             frame2.planes[0].cfg.width as u32,
             frame2.planes[0].cfg.height as u32,
-            yuv_to_rgb_u8(frame2),
+            yuv_to_rgb_u8(frame2, details2),
         )
         .unwrap();
         image2.save(&path2).unwrap();
@@ -224,13 +251,11 @@ fn compare_frame<T: Pixel, U: Pixel>(
     (score, norm)
 }
 
-// butteraugli_main makes us use .ppm files which don't support 8-bit input.
-// I hate it, but it means we have to downconvert.
-// The results should not be considerably skewed.
-fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
+fn yuv_to_rgb_u8<T: Pixel>(frame: &Frame<T>, details: &VideoDetails) -> Vec<u8> {
     let plane_y = &frame.planes[0];
     let plane_u = &frame.planes[1];
     let plane_v = &frame.planes[2];
+    let bd_shift = details.bit_depth - 8;
 
     // TODO: Support HDR content
     let colorspace = if plane_y.cfg.height > 576 {
@@ -238,7 +263,7 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
     } else {
         MatrixCoefficients::BT601
     };
-    let (ss_x, ss_y) = match frame.chroma_sampling {
+    let (ss_x, ss_y) = match details.chroma_sampling {
         ChromaSampling::Cs400 => {
             return (0..plane_y.cfg.height)
                 .flat_map(|y| {
@@ -246,7 +271,7 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
                         let val = if size_of::<T>() == 1 {
                             u8::cast_from(plane_y.p(x, y))
                         } else {
-                            (u16::cast_from(plane_y.p(x, y)) >> (frame.bit_depth - 8)) as u8
+                            (u16::cast_from(plane_y.p(x, y)) >> bd_shift) as u8
                         };
                         [val, val, val].into_iter()
                     })
@@ -258,7 +283,6 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
         ChromaSampling::Cs444 => (0, 0),
     };
 
-    debug_assert_eq!(frame.bit_depth, 8);
     let converter = RGBConvert::<u8>::new(Range::Limited, colorspace).unwrap();
     (0..plane_y.cfg.height)
         .flat_map(|y| {
@@ -273,11 +297,9 @@ fn yuv_to_rgb_u8<T: Pixel>(frame: &FrameInfo<T>) -> Vec<u8> {
                     )
                 } else {
                     (
-                        (u16::cast_from(plane_y.p(x, y)) >> (frame.bit_depth - 8)) as u8,
-                        (u16::cast_from(plane_u.p(chroma_x, chroma_y)) >> (frame.bit_depth - 8))
-                            as u8,
-                        (u16::cast_from(plane_v.p(chroma_x, chroma_y)) >> (frame.bit_depth - 8))
-                            as u8,
+                        (u16::cast_from(plane_y.p(x, y)) >> bd_shift) as u8,
+                        (u16::cast_from(plane_u.p(chroma_x, chroma_y)) >> bd_shift) as u8,
+                        (u16::cast_from(plane_v.p(chroma_x, chroma_y)) >> bd_shift) as u8,
                     )
                 };
                 let yuv = YUV { y, u, v };
