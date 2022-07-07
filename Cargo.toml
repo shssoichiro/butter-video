@@ -11,7 +11,7 @@ av-metrics-decoders = { version = "0.1.7", default-features = false, features = 
     "ffmpeg",
 ] }
 average = "0.13.1"
-clap = "2.34.0"
-image = { version = "0.23", default-features = false, features = ["png"] }
+clap = "3.2.0"
+image = { version = "0.24", default-features = false, features = ["png"] }
 tempfile = "3.2.0"
 yuv = "0.1.4"

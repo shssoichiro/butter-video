@@ -12,7 +12,7 @@ use av_metrics_decoders::{
     VideoDetails,
 };
 use average::{Estimate, Quantile};
-use clap::{App, Arg, ArgMatches, SubCommand};
+use clap::{Arg, ArgMatches};
 use image::{ImageBuffer, RgbImage};
 use tempfile::Builder;
 use yuv::{
@@ -22,19 +22,19 @@ use yuv::{
 };
 
 fn main() {
-    let args = App::new("butter-video")
+    let args = clap::Command::new("butter-video")
         .about("Calculates butteraugli and ssimulacra metrics for videos")
         .subcommand(
-            SubCommand::with_name("butter")
+            clap::Command::new("butter")
                 .about("Calculate butteraugli")
-                .arg(Arg::with_name("input1").required(true).index(1))
-                .arg(Arg::with_name("input2").required(true).index(2)),
+                .arg(Arg::new("input1").required(true).index(1))
+                .arg(Arg::new("input2").required(true).index(2)),
         )
         .subcommand(
-            SubCommand::with_name("ssimulacra")
+            clap::Command::new("ssimulacra")
                 .about("Calculate ssimulacra")
-                .arg(Arg::with_name("input1").required(true).index(1))
-                .arg(Arg::with_name("input2").required(true).index(2)),
+                .arg(Arg::new("input1").required(true).index(1))
+                .arg(Arg::new("input2").required(true).index(2)),
         )
         .get_matches();
 
