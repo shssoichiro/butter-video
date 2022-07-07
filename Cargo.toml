@@ -3,6 +3,10 @@ name = "butter-video"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Compares two videos using the Butteraugli (or SSIMULACRA) metric"
+authors = ["Josh Holmer <jholmer.in@gmail.com>"]
+homepage = "https://github.com/shssoichiro/butter-video"
+repository = "https://github.com/shssoichiro/butter-video"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
