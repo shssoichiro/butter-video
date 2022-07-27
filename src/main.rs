@@ -23,16 +23,22 @@ use yuv::{
 
 fn main() {
     let args = clap::Command::new("butter-video")
-        .about("Calculates butteraugli and ssimulacra metrics for videos")
+        .about("Calculates butteraugli and ssimulacra/ssimulacra2 metrics for videos")
         .subcommand(
             clap::Command::new("butter")
-                .about("Calculate butteraugli")
+                .about("Calculate butteraugli score")
                 .arg(Arg::new("input1").required(true).index(1))
                 .arg(Arg::new("input2").required(true).index(2)),
         )
         .subcommand(
             clap::Command::new("ssimulacra")
-                .about("Calculate ssimulacra")
+                .about("Calculate ssimulacra score")
+                .arg(Arg::new("input1").required(true).index(1))
+                .arg(Arg::new("input2").required(true).index(2)),
+        )
+        .subcommand(
+            clap::Command::new("ssimulacra2")
+                .about("Calculate new ssimulacra2 score")
                 .arg(Arg::new("input1").required(true).index(1))
                 .arg(Arg::new("input2").required(true).index(2)),
         )
@@ -41,6 +47,7 @@ fn main() {
     match args.subcommand_name().unwrap() {
         "butter" => compute_butter(args.subcommand_matches("butter").unwrap()),
         "ssimulacra" => compute_ssimulacra(args.subcommand_matches("ssimulacra").unwrap()),
+        "ssimulacra2" => compute_ssimulacra2(args.subcommand_matches("ssimulacra2").unwrap()),
         _ => unreachable!(),
     };
 }
@@ -58,6 +65,13 @@ fn compute_ssimulacra(args: &ArgMatches) {
     let input1 = Path::new(args.value_of("input1").unwrap());
     let input2 = Path::new(args.value_of("input2").unwrap());
     run_metric(&ssimulacra_path, input1, input2);
+}
+
+fn compute_ssimulacra2(args: &ArgMatches) {
+    let ssimulacra2_path = env::var("SSIMULACRA2_PATH").unwrap_or_else(|_| "ssimulacra2".to_string());
+    let input1 = Path::new(args.value_of("input1").unwrap());
+    let input2 = Path::new(args.value_of("input2").unwrap());
+    run_metric(&ssimulacra2_path, input1, input2);
 }
 
 fn run_metric(base_command: &str, input1: &Path, input2: &Path) {
